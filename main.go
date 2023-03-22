@@ -1,5 +1,7 @@
 package main
 
+// export DOCKER_API_VERSION=1.41
+
 import (
 	"context"
 	"fmt"
@@ -10,17 +12,58 @@ import (
 	"github.com/docker/docker/client"
 )
 
+type container struct {
+	name         string
+	repository   string
+	tag          string
+	exposesPorts bool
+	ports        []uint16
+	outdated     bool
+}
+
 type model struct {
-	cursor   int
-	choices  []string
-	selected map[int]struct{}
+	cursor     int
+	containers []container
+	selected   map[int]struct{}
 }
 
 func initialModel() model {
+	cli, err := client.NewClientWithOpts(client.FromEnv)
+	if err != nil {
+		panic(err)
+	}
+
+	containers_api, err := cli.ContainerList(context.Background(), types.ContainerListOptions{})
+	if err != nil {
+		panic(err)
+	}
+
+	containers := []container{}
+
+	for _, container_api := range containers_api {
+		fmt.Printf("container_api: %+v\n", container_api)
+
+		ports := []uint16{0, 0}
+		exposesPorts := false
+		if len(container_api.Ports) > 0 {
+			ports = []uint16{container_api.Ports[0].PublicPort, container_api.Ports[0].PrivatePort}
+			exposesPorts = true
+		}
+
+		containers = append(containers, container{
+			name:         container_api.Names[0],
+			repository:   container_api.Image,
+			tag:          container_api.Command,
+			exposesPorts: exposesPorts,
+			ports:        ports,
+			outdated:     false,
+		})
+	}
+
 	return model{
-		choices:  []string{"bacon", "eggs", "mayo"},
-		cursor:   0,
-		selected: make(map[int]struct{}),
+		containers: containers,
+		cursor:     0,
+		selected:   make(map[int]struct{}),
 	}
 }
 
@@ -35,7 +78,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor--
 			}
 		case "down", "j":
-			if m.cursor < len(m.choices)-1 {
+			if m.cursor < len(m.containers)-1 {
 				m.cursor++
 			}
 		case "enter", " ":
@@ -51,9 +94,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
-	s := "Shopping list\n\n"
+	s := "Containers\n\n"
 
-	for i, choice := range m.choices {
+	for i, container := range m.containers {
 		cursor := " "
 		if m.cursor == i {
 			cursor = ">"
@@ -65,7 +108,12 @@ func (m model) View() string {
 			checked = "x"
 		}
 
-		s += fmt.Sprintf("%s [%s] %s\n", cursor, checked, choice)
+		if container.exposesPorts {
+			s += fmt.Sprintf("%s [%s] %s %s [%d, %d]\n", cursor, checked, container.name, container.repository, container.ports[0], container.ports[1])
+		} else {
+			s += fmt.Sprintf("%s [%s] %s %s\n", cursor, checked, container.name, container.repository)
+		}
+
 	}
 
 	s += "\nPress q or ctrl + c to quit.\n"
@@ -78,19 +126,6 @@ func (m model) Init() tea.Cmd {
 }
 
 func main() {
-	cli, err := client.NewClientWithOpts(client.FromEnv)
-	if err != nil {
-		panic(err)
-	}
-
-	containers, err := cli.ContainerList(context.Background(), types.ContainerListOptions{})
-	if err != nil {
-		panic(err)
-	}
-
-	for _, container := range containers {
-		fmt.Printf("%s %s\n", container.ID[:10], container.Image)
-	}
 
 	p := tea.NewProgram(initialModel())
 	if _, err := p.Run(); err != nil {
