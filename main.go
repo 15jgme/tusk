@@ -6,13 +6,16 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/15jgme/tusk/whaleFacts"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/docker/docker/api/types"
+	container_types "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
+	"github.com/docker/go-connections/nat"
 )
 
 var (
@@ -40,7 +43,6 @@ type container struct {
 	exposesPorts bool
 	ports        []uint16
 	outdated     bool
-	spinner      spinner.Model
 	imageID      string
 }
 
@@ -50,6 +52,17 @@ type model struct {
 	containers []container
 	selected   map[int]struct{}
 	fact       string
+	spinner    spinner.Model
+}
+
+const (
+	processing_finished int = 0
+	processing_started      = 1
+)
+
+type notification struct {
+	note    int
+	message string
 }
 
 func initialModel() model {
@@ -77,9 +90,6 @@ func initialModel() model {
 			exposesPorts = true
 		}
 
-		defaultSpinner := spinner.New()
-		defaultSpinner.Style = spinnerStyle
-		defaultSpinner.Spinner = spinner.MiniDot
 		// defaultSpinner.Spinner.FPS = 5
 
 		containers = append(containers, container{
@@ -89,10 +99,13 @@ func initialModel() model {
 			exposesPorts: exposesPorts,
 			ports:        ports,
 			outdated:     false,
-			spinner:      defaultSpinner,
 			imageID:      container_api.ImageID,
 		})
 	}
+
+	defaultSpinner := spinner.New()
+	defaultSpinner.Style = spinnerStyle
+	defaultSpinner.Spinner = spinner.MiniDot
 
 	return model{
 		containers: containers,
@@ -100,7 +113,15 @@ func initialModel() model {
 		processing: false,
 		selected:   make(map[int]struct{}),
 		fact:       whaleFacts.GenerateWhaleFact(),
+		spinner:    defaultSpinner,
 	}
+}
+
+func (m model) updateContainers() tea.Msg {
+	for i := range m.selected {
+		m.containers[i].update()
+	}
+	return notification{note: processing_finished, message: "Updated containers"}
 }
 
 func (c container) update() {
@@ -111,21 +132,52 @@ func (c container) update() {
 	}
 
 	// Pull new image
-	reader, err := cli.ImagePull(ctx, c.name, types.ImagePullOptions{})
+	_, err = cli.ImagePull(ctx, c.repository, types.ImagePullOptions{})
 	if err != nil {
 		panic(err)
 	}
 
-	// Check if the image is new (hash is different)
-	fmt.Sprintln(reader)
+	// TODO Check if the image is new (hash is different)
+	// fmt.Println(reader)
 
-}
+	// fmt.Print("Stopping container ", c.name, "... ")
+	noWaitTimeout := 0 // to not wait for the container to exit gracefully
+	if err := cli.ContainerStop(ctx, c.name, container_types.StopOptions{Timeout: &noWaitTimeout}); err != nil {
+		panic(err)
+	}
+	// fmt.Print("Stopped container ", c.name, "... ")
 
-func (m model) tickSpinner() tea.Msg {
-	if m.processing {
-		return m.containers[m.cursor].spinner.Tick()
-	} else {
-		return nil
+	exposed_port, err := nat.NewPort("tcp", strconv.Itoa(int(c.ports[0])))
+	if err != nil {
+		panic(err)
+	}
+	host_port := fmt.Sprintf("%d", c.ports[1])
+
+	config := &container_types.Config{
+		Image: c.repository,
+		ExposedPorts: nat.PortSet{
+			exposed_port: struct{}{},
+		},
+	}
+
+	host_config := &container_types.HostConfig{
+		PortBindings: nat.PortMap{
+			exposed_port: []nat.PortBinding{
+				{
+					HostIP:   "0.0.0.0",
+					HostPort: host_port,
+				},
+			},
+		},
+	}
+
+	resp, err := cli.ContainerCreate(ctx, config, host_config, nil, nil, "")
+	if err != nil {
+		panic(err)
+	}
+
+	if err := cli.ContainerStart(ctx, resp.ID, types.ContainerStartOptions{}); err != nil {
+		panic(err)
 	}
 }
 
@@ -154,18 +206,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "r":
 			if len(m.selected) > 0 {
-				for i := range m.selected {
-					m.containers[i].update()
-				}
+				m.processing = true
+				return m, m.updateContainers
 			}
-
 		}
 	case spinner.TickMsg:
 		var cmd tea.Cmd
-		m.containers[m.cursor].spinner, cmd = m.containers[m.cursor].spinner.Update(msg)
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+	case notification:
+		switch msg.note {
+		case processing_finished:
+			m.processing = false
+			return initialModel(), nil
+		}
+
+	default:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
 	}
-	return m, m.tickSpinner
+	return m, nil
 
 }
 
@@ -184,22 +245,18 @@ func (m model) View() string {
 			checked = "x"
 		}
 
-		spin_view := "" // Spinner view
-
-		if m.processing && m.cursor == i {
-			spin_view = container.spinner.View()
-		}
-
 		if container.exposesPorts {
-			s += fmt.Sprintf("%s [%s] %s %s [%d, %d]  %s\n", cursor, checked, container.name, container.repository, container.ports[0], container.ports[1], spin_view)
+			s += fmt.Sprintf("%s [%s] %s %s [%d, %d]\n", cursor, checked, container.name, container.repository, container.ports[0], container.ports[1])
 		} else {
-			s += fmt.Sprintf("%s [%s] %s %s %s\n", cursor, checked, container.name, container.repository, spin_view)
+			s += fmt.Sprintf("%s [%s] %s %s\n", cursor, checked, container.name, container.repository)
 		}
 	}
 
 	s += "\n"
-	if len(m.selected) > 0 {
+	if len(m.selected) > 0 && !m.processing {
 		s += textStyle("Containers selected, press r to update")
+	} else if m.processing {
+		s += textStyle("Processing: ") + m.spinner.View()
 	}
 
 	s += helpStyle("\nPress q or ctrl + c to quit.")
