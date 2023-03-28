@@ -207,7 +207,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			if len(m.selected) > 0 {
 				m.processing = true
-				return m, m.updateContainers
+				return m, tea.Batch(m.updateContainers, m.spinner.Tick)
 			}
 		}
 	case spinner.TickMsg:
@@ -261,7 +261,7 @@ func (m model) View() string {
 
 	s += helpStyle("\nPress q or ctrl + c to quit.")
 	if m.processing {
-		s += helpStyle(fmt.Sprintf("\nDid you know? : %s", m.fact))
+		s += helpStyle(fmt.Sprintf("\nDid you know? : %s\n", m.fact))
 	} else {
 		s += "\n"
 	}
@@ -270,7 +270,7 @@ func (m model) View() string {
 }
 
 func (m model) Init() tea.Cmd {
-	return nil
+	return m.spinner.Tick
 }
 
 func main() {
