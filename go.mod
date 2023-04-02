@@ -7,6 +7,8 @@ require github.com/charmbracelet/bubbletea v0.23.2
 require (
 	github.com/Microsoft/go-winio v0.6.0 // indirect
 	github.com/aymanbagabas/go-osc52 v1.2.1 // indirect
+	github.com/charmbracelet/bubbles v0.15.0 // indirect
+	github.com/charmbracelet/lipgloss v0.6.0 // indirect
 	github.com/containerd/console v1.0.3 // indirect
 	github.com/docker/distribution v2.8.1+incompatible // indirect
 	github.com/docker/docker v23.0.1+incompatible // indirect
