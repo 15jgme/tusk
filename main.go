@@ -10,6 +10,7 @@ import (
 
 	"github.com/15jgme/tusk/whaleFacts"
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/docker/docker/api/types"
@@ -19,6 +20,7 @@ import (
 )
 
 var (
+	initial_load = true // On first load hide whale fact
 	// Available spinners
 	spinners = []spinner.Spinner{
 		spinner.Line,
@@ -34,6 +36,23 @@ var (
 	textStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render
 	spinnerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("69"))
 	helpStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render
+	titleStyle   = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#FAFAFA")).
+		// Background(lipgloss.Color("#7D56F4")).
+		PaddingTop(1).
+		PaddingBottom(0).
+		PaddingLeft(1)
+	subTitleStyle = lipgloss.NewStyle().
+			Italic(true).
+			Foreground(lipgloss.Color("#FAFAFA")).
+		// Background(lipgloss.Color("#7D56F4")).
+		PaddingTop(0).
+		PaddingBottom(0).
+		PaddingLeft(1)
+	baseStyle = lipgloss.NewStyle().
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color("240"))
 )
 
 type container struct {
@@ -41,7 +60,7 @@ type container struct {
 	repository   string
 	tag          string
 	exposesPorts bool
-	ports        []uint16
+	ports        [][]uint16
 	outdated     bool
 	imageID      string
 }
@@ -53,6 +72,7 @@ type model struct {
 	selected   map[int]struct{}
 	fact       string
 	spinner    spinner.Model
+	table      table.Model
 }
 
 const (
@@ -66,6 +86,9 @@ type notification struct {
 }
 
 func initialModel() model {
+	rows := []table.Row{} // Rows need to be initialized in function scope
+
+	// Fetch containers from docker API
 	cli, err := client.NewClientWithOpts(client.FromEnv)
 	if err != nil {
 		panic(err)
@@ -78,21 +101,24 @@ func initialModel() model {
 
 	containers := []container{}
 
-	// types.ImagePullOptions
-
 	for _, container_api := range containers_api {
-		// fmt.Printf("container_api: %+v\n", container_api)
+		// fmt.Printf("container_api: %+v\n", container_api.Ports)
 
-		ports := []uint16{0, 0}
 		exposesPorts := false
-		if len(container_api.Ports) > 0 {
-			ports = []uint16{container_api.Ports[0].PublicPort, container_api.Ports[0].PrivatePort}
+
+		s_port := ""
+		ports := make([][]uint16, len(container_api.Ports))
+		for i := range ports {
 			exposesPorts = true
+			ports[i] = []uint16{container_api.Ports[i].PublicPort, container_api.Ports[i].PrivatePort}
+
+			if s_port != "" {
+				s_port += ", "
+			}
+			s_port += fmt.Sprintf("%s:%d->%d/%s", container_api.Ports[i].IP, ports[0][0], ports[0][1], container_api.Ports[i].Type)
 		}
 
-		// defaultSpinner.Spinner.FPS = 5
-
-		containers = append(containers, container{
+		current_container := container{
 			name:         container_api.Names[0],
 			repository:   container_api.Image,
 			tag:          container_api.Command,
@@ -100,12 +126,46 @@ func initialModel() model {
 			ports:        ports,
 			outdated:     false,
 			imageID:      container_api.ImageID,
-		})
+		}
+
+		rows = append(rows, []string{"", current_container.name, current_container.repository, s_port})
+
+		containers = append(containers, current_container)
 	}
+
+	// rows = append(rows, []string{current_container.name, current_container.repository})
 
 	defaultSpinner := spinner.New()
 	defaultSpinner.Style = spinnerStyle
 	defaultSpinner.Spinner = spinner.MiniDot
+
+	// Initialize table component
+	columns := []table.Column{
+		{Title: "", Width: 2},
+		{Title: "Name", Width: 15},
+		{Title: "Image", Width: 30},
+		{Title: "Ports", Width: 40},
+	}
+
+	t := table.New(
+		table.WithColumns(columns),
+		table.WithRows(rows),
+		table.WithFocused(true),
+		table.WithHeight(7),
+	)
+
+	style := table.DefaultStyles()
+	style.Header = style.Header.
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("240")).
+		BorderBottom(true).
+		Bold(false)
+	style.Selected = style.Selected.
+		Foreground(lipgloss.Color("229")).
+		Background(lipgloss.Color("57")).
+		Bold(false)
+	t.SetStyles(style)
+	// End of table initalization
 
 	return model{
 		containers: containers,
@@ -114,6 +174,7 @@ func initialModel() model {
 		selected:   make(map[int]struct{}),
 		fact:       whaleFacts.GenerateWhaleFact(),
 		spinner:    defaultSpinner,
+		table:      t,
 	}
 }
 
@@ -147,11 +208,11 @@ func (c container) update() {
 	}
 	// fmt.Print("Stopped container ", c.name, "... ")
 
-	exposed_port, err := nat.NewPort("tcp", strconv.Itoa(int(c.ports[0])))
+	exposed_port, err := nat.NewPort("tcp", strconv.Itoa(int(c.ports[0][1])))
 	if err != nil {
 		panic(err)
 	}
-	host_port := fmt.Sprintf("%d", c.ports[1])
+	host_port := fmt.Sprintf("%d", c.ports[0][0])
 
 	config := &container_types.Config{
 		Image: c.repository,
@@ -185,14 +246,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
+		case "esc":
+			if m.table.Focused() {
+				m.table.Blur()
+			} else {
+				m.table.Focus()
+			}
 		case "ctrl+q", "q":
 			return m, tea.Quit
 		case "up", "k":
 			if m.cursor > 0 && !m.processing {
+				m.table.MoveUp(1)
 				m.cursor--
 			}
 		case "down", "j":
 			if m.cursor < len(m.containers)-1 && !m.processing {
+				m.table.MoveDown(1)
 				m.cursor++
 			}
 		case "enter", " ":
@@ -200,13 +269,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_, ok := m.selected[m.cursor]
 				if ok {
 					delete(m.selected, m.cursor)
+					rows := m.table.Rows()
+					rows[m.cursor][0] = ""
+					m.table.SetRows(rows)
 				} else {
 					m.selected[m.cursor] = struct{}{}
+					rows := m.table.Rows()
+					rows[m.cursor][0] = "x"
+					m.table.SetRows(rows)
 				}
 			}
 		case "r":
 			if len(m.selected) > 0 {
 				m.processing = true
+				initial_load = false
 				return m, tea.Batch(m.updateContainers, m.spinner.Tick)
 			}
 		}
@@ -223,7 +299,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	default:
 		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
+		// m.spinner, cmd = m.spinner.Update(msg)
+		m.table, cmd = m.table.Update(msg)
 		return m, cmd
 	}
 	return m, nil
@@ -231,36 +308,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
-	s := "Containers\n\n"
 
-	for i, container := range m.containers {
-		cursor := " "
-		if m.cursor == i {
-			cursor = ">"
-		}
+	s := titleStyle.Render("Tusk")
+	s += subTitleStyle.Render("\ncontainer updates done quick ⚡")
+	s += "\n\n"
 
-		checked := " "
-
-		if _, ok := m.selected[i]; ok {
-			checked = "x"
-		}
-
-		if container.exposesPorts {
-			s += fmt.Sprintf("%s [%s] %s %s [%d, %d]\n", cursor, checked, container.name, container.repository, container.ports[0], container.ports[1])
-		} else {
-			s += fmt.Sprintf("%s [%s] %s %s\n", cursor, checked, container.name, container.repository)
-		}
-	}
+	s += baseStyle.Render(m.table.View()) + "\n"
 
 	s += "\n"
 	if len(m.selected) > 0 && !m.processing {
-		s += textStyle("Containers selected, press r to update")
+		s += textStyle(fmt.Sprintf("%d containers selected, press r to update", len(m.selected)))
 	} else if m.processing {
 		s += textStyle("Processing: ") + m.spinner.View()
 	}
 
 	s += helpStyle("\nPress q or ctrl + c to quit.")
-	if m.processing {
+	if !initial_load {
 		s += helpStyle(fmt.Sprintf("\nDid you know? : %s\n", m.fact))
 	} else {
 		s += "\n"
