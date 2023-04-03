@@ -1,4 +1,5 @@
 # Tusk⚡
+[![Go](https://github.com/15jgme/tusk/actions/workflows/go.yml/badge.svg)](https://github.com/15jgme/tusk/actions/workflows/go.yml)
 
 A lightweight and (eventually) pretty cli tool for updating docker container instances. Written in Go using BubbleTea.
 
