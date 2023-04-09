@@ -55,12 +55,18 @@ var (
 			BorderForeground(lipgloss.Color("240"))
 )
 
+type container_port struct {
+	cont_port uint16
+	host_port uint16
+	host_IP string
+}
+
 type container struct {
 	name         string
 	repository   string
 	tag          string
 	exposesPorts bool
-	ports        [][]uint16
+	ports        []container_port
 	outdated     bool
 	imageID      string
 }
@@ -102,15 +108,18 @@ func initialModel() model {
 	containers := []container{}
 
 	for _, container_api := range containers_api {
-		// fmt.Printf("container_api: %+v\n", container_api.Ports)
 
 		exposesPorts := false
 
 		s_port := ""
-		ports := make([][]uint16, len(container_api.Ports))
+		ports := make([]container_port, len(container_api.Ports))
 		for i := range ports {
 			exposesPorts = true
-			ports[i] = []uint16{container_api.Ports[i].PublicPort, container_api.Ports[i].PrivatePort}
+			ports[i] = container_port{
+				host_port: container_api.Ports[i].PublicPort
+				host_IP: container_api.Ports[i].IP
+				cont_port: container_api.Ports[i].PrivatePort
+			}
 
 			if s_port != "" {
 				s_port += ", "
@@ -219,6 +228,11 @@ func (c container) update() {
 		ExposedPorts: nat.PortSet{
 			exposed_port: struct{}{},
 		},
+	}
+
+	port_bindings := []nat.PortBinding{}
+	for _, port in c.ports{
+		(port_bindings)
 	}
 
 	host_config := &container_types.HostConfig{
