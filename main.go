@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strconv"
 
 	"github.com/15jgme/tusk/whaleFacts"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -58,7 +57,8 @@ var (
 type container_port struct {
 	cont_port uint16
 	host_port uint16
-	host_IP string
+	host_IP   string
+	protocol  string
 }
 
 type container struct {
@@ -95,7 +95,7 @@ func initialModel() model {
 	rows := []table.Row{} // Rows need to be initialized in function scope
 
 	// Fetch containers from docker API
-	cli, err := client.NewClientWithOpts(client.FromEnv)
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		panic(err)
 	}
@@ -115,16 +115,27 @@ func initialModel() model {
 		ports := make([]container_port, len(container_api.Ports))
 		for i := range ports {
 			exposesPorts = true
+			// fmt.Sprintln("%s", container_api.Ports[i])
 			ports[i] = container_port{
-				host_port: container_api.Ports[i].PublicPort
-				host_IP: container_api.Ports[i].IP
-				cont_port: container_api.Ports[i].PrivatePort
+				host_port: container_api.Ports[i].PublicPort,
+				host_IP:   container_api.Ports[i].IP,
+				cont_port: container_api.Ports[i].PrivatePort,
+				protocol:  container_api.Ports[i].Type,
 			}
+
+			// Try to avoid using the :: blank container IPs
+			if ports[i].host_IP == "::" {
+				ports[i].host_IP = ""
+			}
+
+			// Note: if the port is a wildcard '0' it could be that a host port
+			// has not been specified. If this is the case, we will try to match it
+			// with the container port, but if that port is taken we will try a wild card
 
 			if s_port != "" {
 				s_port += ", "
 			}
-			s_port += fmt.Sprintf("%s:%d->%d/%s", container_api.Ports[i].IP, ports[0][0], ports[0][1], container_api.Ports[i].Type)
+			s_port += fmt.Sprintf("%s:%d->%d/%s", container_api.Ports[i].IP, ports[0].host_port, ports[0].cont_port, container_api.Ports[i].Type)
 		}
 
 		current_container := container{
@@ -217,33 +228,39 @@ func (c container) update() {
 	}
 	// fmt.Print("Stopped container ", c.name, "... ")
 
-	exposed_port, err := nat.NewPort("tcp", strconv.Itoa(int(c.ports[0][1])))
-	if err != nil {
-		panic(err)
+	cont_bindings := nat.PortSet{}
+	port_map := nat.PortMap{}
+
+	for _, port := range c.ports {
+		// Check if the host port is a wildcard '0'
+		if port.host_port == 0 && isHostPortAvailable(port.host_port) {
+			port.host_port = port.cont_port
+		} // else, keep as wildcard and let the system find a port
+
+		// Add host machine port and IP to map
+		host_port_i := []nat.PortBinding{{
+			HostIP:   port.host_IP,
+			HostPort: fmt.Sprintf("%d", port.host_port),
+		}}
+
+		// Add container exposed port to map
+		exposed_port, err := nat.NewPort(port.protocol, fmt.Sprintf("%d", port.cont_port)) // Port
+		if err != nil {
+			panic(err)
+		}
+		cont_bindings[exposed_port] = struct{}{} // Add to map
+
+		// Add to container -> host mapping
+		port_map[exposed_port] = host_port_i
 	}
-	host_port := fmt.Sprintf("%d", c.ports[0][0])
 
 	config := &container_types.Config{
-		Image: c.repository,
-		ExposedPorts: nat.PortSet{
-			exposed_port: struct{}{},
-		},
-	}
-
-	port_bindings := []nat.PortBinding{}
-	for _, port in c.ports{
-		(port_bindings)
+		Image:        c.repository,
+		ExposedPorts: cont_bindings,
 	}
 
 	host_config := &container_types.HostConfig{
-		PortBindings: nat.PortMap{
-			exposed_port: []nat.PortBinding{
-				{
-					HostIP:   "0.0.0.0",
-					HostPort: host_port,
-				},
-			},
-		},
+		PortBindings: port_map,
 	}
 
 	resp, err := cli.ContainerCreate(ctx, config, host_config, nil, nil, "")
