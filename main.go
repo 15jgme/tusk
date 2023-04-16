@@ -222,7 +222,7 @@ func (c container) update() {
 	// fmt.Println(reader)
 
 	// fmt.Print("Stopping container ", c.name, "... ")
-	noWaitTimeout := 0 // to not wait for the container to exit gracefully
+	noWaitTimeout := 10 // to not wait for the container to exit gracefully
 	if err := cli.ContainerStop(ctx, c.name, container_types.StopOptions{Timeout: &noWaitTimeout}); err != nil {
 		panic(err)
 	}
@@ -232,9 +232,15 @@ func (c container) update() {
 	port_map := nat.PortMap{}
 
 	for _, port := range c.ports {
+
 		// Check if the host port is a wildcard '0'
-		if port.host_port == 0 && isHostPortAvailable(port.host_port) {
+		if port.host_port == 0 && isHostPortAvailable(port.cont_port) {
 			port.host_port = port.cont_port
+		} else if !isHostPortAvailable(port.host_port) {
+			// If the port is already occupied then we need to assign a wild card
+			// Docker can run multiple containers with the same port exposed somehow
+			// Not sure yet how to replicate that here
+			port.host_port = 0
 		} // else, keep as wildcard and let the system find a port
 
 		// Add host machine port and IP to map
