@@ -4,11 +4,11 @@ Hide
 Output resources/tuskDemo.gif
 
 # Set up a 1200x600 terminal with 46px font.
-Set FontSize 17 #46
+Set FontSize 15 #46
 Set Width 1200
 Set Height 600
-Set Framerate 60
-Set PlaybackSpeed 0.4 # Keep output at normal speed (default)
+#Set Framerate 60
+#Set PlaybackSpeed 0.4 # Keep output at normal speed (default)
 
 Show
 # Type a command in the terminal.
